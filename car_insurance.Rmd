@@ -1,0 +1,372 @@
+---
+title: "car_insurance"
+author: '416623'
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(gridExtra)
+library(kableExtra)
+library(naniar)
+library(corrplot)
+```
+
+Data source:
+https://www.kaggle.com/datasets/sagnik1511/car-insurance-data/data
+
+Context
+The company has shared its annual car insurance data. Now, you have to find out the real customer behaviors over the data.
+
+
+The work will focus on exploring the data (EDA) and then using popular machine learning models to predict the occurrence of a claim. We will assume that explanatory variables translate into the likelihood of claims occurring.
+
+
+# Basic first steps
+
+```{r echo=FALSE}
+df <- read.csv("C:/Users/smpop/OneDrive/Pulpit/Rrrrr/archive/Car_Insurance_Claim.csv")
+str(df)
+```
+
+We can see our data has very clear structure. We will start with dropping some unnecesary column - it is definately *ID*, *POSTAL_CODE*. I will also drop *RACE* columns, as I don't want to discuss potential race effect on insurance result.
+
+```{r echo=FALSE}
+df <- subset(df, select = -c(ID,POSTAL_CODE,RACE))
+```
+
+As remaining columns we get:
+```{r echo=FALSE}
+colnames(df)
+```
+Pretty much self explaining, apart from one, it is DUIS - Driving Under the Influence (at least i'll assume that's it).
+
+Before additional 'factoring' we will check for potential *NA* values.
+
+```{r}
+na_values<-function(x){
+  sum(as.vector(is.na(x)))
+}
+
+apply(df,2,na_values)
+```
+We can see some lacks in two variables, it is CREDIT_SCORE and ANNUAL_MILEAGE. Both variables are numerical (among many categorical variables). For now will skip this problem - yet we will see how these 'NA's correlate.
+
+Amount of observations where both variables are NA:
+```{r}
+nrow(df%>%dplyr::filter(is.na(CREDIT_SCORE) & is.na(ANNUAL_MILEAGE)))
+```
+Lacks are pretty separated.
+
+```{r echo=FALSE}
+p1<-vis_miss(df[c("CREDIT_SCORE")])
+p2<-vis_miss(df[c("ANNUAL_MILEAGE")])
+p2$labels$y=""
+
+grid.arrange(p1,p2, nrow=1)
+```
+
+Now we will move to potential factoring in categorical (for now character) variables. At the same time will check their distribution in the data.
+
+```{r echo=FALSE}
+for (i in c("AGE","GENDER","DRIVING_EXPERIENCE","EDUCATION","INCOME","VEHICLE_YEAR","VEHICLE_TYPE")){
+  print(table(df[i]))
+}
+```
+
+Fortunately, we do not see any bigger disproportions, apart from last one indicating type of car. Nothing unexpected - sports cars are rare, even under insurance cooperations.
+
+We'll factor some variables (it is not necesarry, but we'll do it)
+
+```{r}
+df$AGE = factor(df$AGE,levels=c("16-25","26-39","40-64","65+"),ordered=TRUE)
+df$DRIVING_EXPERIENCE=factor(df$DRIVING_EXPERIENCE, levels=c("0-9y","10-19y","20-29y","30y+"),ordered = TRUE)
+df$EDUCATION=factor(df$EDUCATION,levels=c("none","high school","university"),ordered=TRUE)
+df$INCOME=factor(df$INCOME, c("poverty","working class","middle class","upper class"),ordered=TRUE)
+```
+
+For now it will be enough.
+
+# Analysis
+
+As at the end the work we are going to perform prediction - analysis won't be very long (especially if we have many columns). We will try to get some bigger knowledge about insurance company clients.
+
+```{r echo=FALSE}
+ggplot(df,aes(GENDER,fill=AGE))+
+  geom_bar()+
+  theme_minimal()
+```
+
+We can see some very regular structure in terms of ages and genders of insurance company clients. As to be predicted we can see more middle-aged people in comparison to youths and elderly.
+
+```{r echo=FALSE}
+#table(df$AGE,df$DRIVING_EXPERIENCE)
+table(df[c("AGE","DRIVING_EXPERIENCE")])
+```
+As natural the older the clients the bigger experience they may get. Interestingly we can see some significant amount of 65+ who got their experience lately.
+
+```{r echo=FALSE}
+p1<-ggplot(df, aes(INCOME,fill=AGE))+
+  geom_bar(position = "dodge")+
+  facet_wrap(~EDUCATION)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p2<-ggplot(df, aes(AGE,fill=INCOME))+
+  geom_bar(position = "fill",)+
+  facet_wrap(~EDUCATION)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p1
+p2
+```
+
+One thing we can get from both plots is the fact that in long-term the better the eductation the bigger chance to be in better class. Intuitively it seems natural. 
+
+Let's look at the credit score - let's assume it is the information insurance company gained from client's banks.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+p1<-ggplot(df,aes(CREDIT_SCORE))+
+  geom_density(linewidth=2,col='red')
+
+p2<-ggplot(df,aes(CREDIT_SCORE,fill=INCOME))+
+  geom_density(linewidth=0.5,alpha=0.5)+coord_flip()
+
+grid.arrange(p1,p2,ncol=2)
+```
+
+Credit scores (as assumed) look very intuitive - the bigger the earnings the better the credit score. Suprisingly - distributions look very gaussian.
+
+If it comes to variable VEHICLE_OWNERSHIP - it may be indicator of some other person behind a client - moral hazard things. We may see some correlation between ownership and outcome (dependencies with Y variable will be discussed later).
+
+1 indicates ownership, 0 otherwise.
+
+```{r echo=FALSE}
+table(df$VEHICLE_OWNERSHIP)
+```
+
+
+Let's look at numbers about marriage and children. First variable: 1 indicates client being married, 0 otherwise. Second variable: 1 indicates having children.
+
+
+```{r}
+table(df[c("MARRIED","CHILDREN")])
+```
+
+Suprisingly we can see many not married with children clients.
+Let's look at age distribution for those people.
+
+```{r}
+barplot(table(df%>%filter(MARRIED==0 & CHILDREN==1)%>%
+  dplyr::select(AGE)))
+```
+
+It looks like it isn't that much connected to the fact that some people may be divorced. Very interesting. Another story if MARRIED in our data is an indicator of legal marriage or just having a partner for very long time - if the second one is the correct one - then interpretation for the data may differ.
+
+We will interpret ANNUAL_MILEAGE as of how much client drives the hole year - doesn't matter if insured car is just for commute or for work-wise purpose (indicator of how much does client drives). 
+
+```{r message=FALSE, warning=FALSE,echo=FALSE}
+ggplot(df,aes(ANNUAL_MILEAGE))+
+  geom_histogram(bins = 50)+
+  theme_minimal()
+```
+
+Next two variables may have some correlation, it is VEHICLE_TYPE and SPEEDING_VIOLATIONS, but only naively. Let's look at the numbers.
+
+```{r}
+divide_by_sum<-function(x){ x/sum(x)}
+v<-table(df$VEHICLE_TYPE, df$SPEEDING_VIOLATIONS)
+probs<-apply(v,1,divide_by_sum)
+knitr::kable(data.frame(probs)%>%rownames_to_column(var="amount_of_speed_val"),align = "c",caption = "Frequencies of speed_val for given car")
+```
+
+We can't see any specific differences.
+
+We will skip last two variables for Y variable comparison in next chapter.
+
+
+# Outcome variable
+
+Value count on OUTCOME after dropping NA records: 
+
+```{r}
+table(drop_na(df)$OUTCOME)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+df1<-df[,]
+
+df$OUTCOME<-as.factor(df$OUTCOME)
+df$MARRIED = recode(df$MARRIED, '0' = "Not married", '1'='Married')
+df$CHILDREN = recode(df$CHILDREN, '0' = "No children", '1'='Children')
+df$VEHICLE_OWNERSHIP=as.factor(df$VEHICLE_OWNERSHIP)
+df$MARRIED=as.factor(df$MARRIED)
+df$CHILDREN=as.factor(df$CHILDREN)
+
+p1<-ggplot(df,aes(AGE,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+p2<-ggplot(df,aes(GENDER,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+p3<-ggplot(df,aes(DRIVING_EXPERIENCE,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme(axis.text.x = element_text(angle = 45,size=6))
+
+p4<-ggplot(df,aes(EDUCATION,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme(axis.text.x = element_text(angle = 45,size=6))
+
+grid.arrange(p1,p2,p3,p4,ncol=2)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+p1<-ggplot(df,aes(INCOME,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme(axis.text.x = element_text(angle = 45,size=6))
+
+p2<-ggplot(df,aes(CREDIT_SCORE,fill=OUTCOME))+
+  geom_density(alpha=0.5)+
+  theme_minimal()
+
+p3<-ggplot(df,aes(VEHICLE_OWNERSHIP,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+p4<-ggplot(df,aes(VEHICLE_YEAR,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+grid.arrange(p1,p2,p3,p4,ncol=2)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+p1<-ggplot(df,aes(MARRIED,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()+
+  facet_wrap(~CHILDREN)+
+  theme(axis.text.x = element_text(angle = 45,size=6),axis.title = element_blank())
+
+p2<-ggplot(df,aes(ANNUAL_MILEAGE,fill=OUTCOME))+
+  geom_density(alpha=0.5)+
+  theme_minimal()
+
+p3<-ggplot(df,aes(SPEEDING_VIOLATIONS,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+p4<-ggplot(df,aes(PAST_ACCIDENTS,fill=OUTCOME))+
+  geom_bar(position='fill')+
+  theme_minimal()
+
+grid.arrange(p1,p2,p3,p4,ncol=2)
+
+table(df[c("PAST_ACCIDENTS","OUTCOME")])
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+p1<-ggplot(df,aes(DUIS,fill=OUTCOME))+
+  geom_bar(position='dodge')+
+  theme_minimal()
+
+p2<-ggplot(df,aes(DUIS,fill=OUTCOME))+
+  geom_bar(position='dodge')+
+  xlim(c(0.5,5.5))+
+  theme_minimal()
+
+grid.arrange(p1,p2,ncol=2)
+```
+
+
+Results if it comes to future claims looks clear in most variables. The more experienced driver - the less chance of claim; on average the higher the education - we get less claims; if the car is not owned by the client - chances of claims rises; older cars correlate with claims; people with children drive less risky, more confidentally; little difference in annual_mileage for claims and not claims observations; legal violations do not correlate positively very much with outcome variable - suprisingly the more of them, the less frequent claims get.
+
+# PCA
+
+To sum up, we will drop our variables to components. PCA is the statistical technique that reduces about of dimentions by creating synthetic variables with linear combinations of already existing ones. Before that we need to do some preprocessing like numerical ordering or one-hot encoding.
+
+```{r}
+df1$GENDER<-recode(df1$GENDER,'female'=0, 'male'=1)
+levels(df1$DRIVING_EXPERIENCE)<-c(1:4)
+df1$DRIVING_EXPERIENCE <- as.double(as.character(df1$DRIVING_EXPERIENCE))
+levels(df1$AGE)<-c(1:4)
+df1$AGE <- as.double(as.character(df1$AGE))
+levels(df1$EDUCATION)<-c(1:3)
+df1$EDUCATION <- as.double(as.character(df1$EDUCATION))
+levels(df1$INCOME)<-c(1:4)
+df1$INCOME <- as.double(as.character(df1$INCOME))
+df1$VEHICLE_YEAR<-recode(df1$VEHICLE_YEAR,'after 2015'=1, 'before 2015'=0)
+df1$VEHICLE_TYPE<-recode(df1$VEHICLE_TYPE,'sports car'=1, 'sedan'=0)
+```
+
+After consideration, we decided to move on with ordered by integer numbers variables AGE, EDUCATION, DRIVING_EXPERIENCE and INCOME. At this point, we will simply drop NA records.
+
+```{r echo=FALSE}
+df1<-drop_na(df1)
+```
+
+
+```{r echo=FALSE}
+
+cor_mat <- cor(df1, use = "pairwise.complete.obs")
+corrplot(cor_mat, method = "color", type = "upper",
+         col = colorRampPalette(c("blue", "white", "red"))(200),
+         addCoef.col = "black",number.cex = 0.4,tl.cex=0.5)  # correlation values
+```
+
+For PCA computation's we will use 6 variables (for visualisation purposes) that are most correlated with Y, it is: AGE, DRIVING_EXPERIENCE, INCOME, VEHICLE_OWNERSHIP, CREDIT_SCORE and PAST_ACCIDENTS (even though initial analysis did not find much of effect). We need to take into account the fact of many 0/1 variables - they are not very convenient for linear purposes. For PCA - we scale the data, so they are mean=0 and sd=1.
+
+```{r}
+pca<-prcomp(subset(df1, select = c(AGE, DRIVING_EXPERIENCE, INCOME, VEHICLE_OWNERSHIP, CREDIT_SCORE, PAST_ACCIDENTS)), center = TRUE, scale. = TRUE)
+```
+
+
+```{r echo=FALSE}
+# pca_var_per <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 1)
+# barplot(
+#     pca_var_per[1:6], main = "Percentage Variances of the Principal Components",
+#     xlab= "Principal Component", ylab= "Principal Variation"
+# )
+```
+
+```{r echo=FALSE}
+library(factoextra)
+fviz_screeplot(pca)
+```
+```{r echo=FALSE}
+pca_data<-data.frame(pca$x[,1:2])
+loadings <- pca$rotation[, 1:2]
+par(pty = "s")  # square plot area
+plot(NA, xlim = c(-0.75, 0.75), ylim = c(-0.75, 0.75),
+     type = "n", xlab = "PC1", ylab = "PC2",
+     xaxs = "i", yaxs = "i", asp = 1)
+
+# Draw arrows
+arrows(0, 0, loadings[,1], loadings[,2], length = 0.1, col = "red")
+
+# Smaller text
+text(loadings[,1], loadings[,2], labels = rownames(loadings),
+     col = "blue", pos = 3, cex = 0.5)
+```
+
+```{r echo=FALSE}
+pca_data$label = df1$OUTCOME
+
+ggplot(pca_data,aes(PC1,PC2,colour=as.factor(label)))+
+  geom_point()+
+  theme_minimal()
+```
+
+Biplot and scatterplot both speak for itself - variables ale negatively correlated with claim, therefore we can see more of Y=1 on the right side of the graph.
+
+
+
+
+
+
